@@ -16,7 +16,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 
 from components import (LIGHT, bar_chart, callout, caption, cards, fold_chart, heading, inject_styles,
-                        references, series_chart, table, theme_tokens, toc)
+                        pdf_button, presentation_controls, presentation_styles, references, series_chart, table, theme_tokens,
+                        toc)
 from references import REFERENCES
 from train_model import FEATURES, add_time_features
 
@@ -140,7 +141,16 @@ svr_test = metrics(y_true, test["prediction"])
 persistence_test = metrics(y_true, test["prediction_persistence"])
 
 with st.sidebar:
-    toc(SECTIONS, "Reporte técnico")
+    slide = presentation_controls(SECTIONS)
+    if slide is None:
+        toc(SECTIONS, "Reporte técnico")
+    else:
+        presentation_styles(SECTIONS, slide)
+        st.caption("Se aplica a la pestaña Reporte técnico.")
+    st.divider()
+    pdf_button("Descargar PDF", tokens)
+    st.caption("Abre la pestaña Reporte técnico y elige «Guardar como PDF» en el diálogo de impresión: portada y una "
+               "sección por página, en horizontal.")
 
 tab_product, tab_report = st.tabs(["Predicción", "Reporte técnico"])
 

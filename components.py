@@ -3,6 +3,7 @@ gráficas, índice y referencias. No dependen del modelo ni de los datos del pro
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 # Tokens de notebook-theme-preview.html; los colores base vienen de .streamlit/config.toml
 LIGHT = {
@@ -20,6 +21,49 @@ _figures = {"count": 0}
 def theme_tokens():
     """Tokens de color del tema activo (claro u oscuro)."""
     return DARK if st.context.theme.type == "dark" else LIGHT
+
+
+REPORT_BLOCK = '[data-testid="stTabPanel"] > [data-testid="stVerticalBlock"]:has(> * h2.nb-h2)'
+
+# Impresión / PDF: el reporte se imprime como diapositivas horizontales (portada y una sección por página), sin la
+# interfaz de Streamlit. Los contenedores de Streamlit tienen altura fija con scroll; sin liberarlos, solo se imprimiría
+# lo visible en pantalla.
+PRINT_CSS = f"""
+@media print {{
+  @page {{ size: A4 landscape; margin: 12mm 14mm; }}
+  html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stMainBlockContainer"] {{
+    height: auto !important; overflow: visible !important; position: static !important; }}
+  [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
+  [data-testid="stStatusWidget"], [data-testid="stTabs"] [role="tablist"], [data-testid="stIFrame"],
+  [data-testid="stExpander"] summary svg {{ display: none !important; }}
+  [data-testid="stMainBlockContainer"] {{ max-width: 100% !important; padding: 0 !important; }}
+  html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{ background: #ffffff !important; }}
+  * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  {REPORT_BLOCK} > * {{ display: block !important; break-inside: avoid; }}
+  {REPORT_BLOCK} > *:has(.nb-title) {{ break-after: page; }}
+  {REPORT_BLOCK} > *:has(h2.nb-h2) {{ break-before: page; }}
+  .nb-h2 {{ margin-top: 0 !important; }}
+  /* El mapa de pydeck es WebGL y el navegador no lo imprime: se ocultan el mapa y su pie; el mapa de calor siguiente
+     tiene los mismos datos */
+  {REPORT_BLOCK} > [data-testid="stElementContainer"]:has([data-testid="stDeckGlJsonChart"]),
+  {REPORT_BLOCK} > [data-testid="stElementContainer"]:has([data-testid="stDeckGlJsonChart"]) + * {{ display: none !important; }}
+}}
+"""
+
+
+def pdf_button(label="Descargar PDF", tokens=None):
+    """Botón que abre el diálogo de impresión del navegador para guardar el reporte como PDF.
+
+    st.html no ejecuta JavaScript, así que el botón vive en un componente (iframe) y llama a la ventana principal.
+    """
+    tokens = tokens or {}
+    accent, fg, border = tokens.get("accent", "#5B3DC8"), tokens.get("fg", "#1F1B2D"), tokens.get("border", "#E4DFEE")
+    st_components.html(f"""
+    <button onclick="window.parent.print()" style="width:100%; padding:0.45rem 0.75rem; border-radius:0.5rem;
+      border:1px solid {border}; background:transparent; color:{fg}; font:500 0.95rem 'IBM Plex Sans', sans-serif;
+      cursor:pointer;" onmouseover="this.style.borderColor='{accent}'; this.style.color='{accent}'"
+      onmouseout="this.style.borderColor='{border}'; this.style.color='{fg}'">{label}</button>
+    """, height=44)
 
 
 def inject_styles(tokens):
@@ -100,6 +144,7 @@ mark {{ background: var(--nb-mark); color: inherit; padding: 0.05em 0.25em; bord
 .pd-stat span {{ font-size: 0.88rem; line-height: 1.5; color: var(--nb-muted); }}
 .pd-list {{ padding-left: 1.2rem !important; line-height: 1.6; }}
 .pd-list li {{ margin-bottom: 0.5rem; }}
+{PRINT_CSS}
 </style>
 """)
 
@@ -114,6 +159,48 @@ def toc(sections, title):
     """Índice con enlaces a cada sección (para la barra lateral)."""
     items = "".join(f'<li><a href="#{a}">{t}</a></li>' for a, t in sections)
     st.html(f'<div class="nb-toc-title">{title}</div><nav class="nb-toc"><ol>{items}</ol></nav>')
+
+
+def presentation_controls(sections, key="slide"):
+    """Interruptor de modo presentación con flechas y selector de sección.
+
+    Devuelve el índice de la sección activa, o None si el modo está apagado.
+    """
+    if not st.toggle("Modo presentación", key=f"{key}_on"):
+        return None
+    st.session_state.setdefault(key, 0)
+    last = len(sections) - 1
+
+    def move(step):
+        st.session_state[key] = min(max(st.session_state[key] + step, 0), last)
+
+    back, forward = st.columns(2)
+    back.button("Anterior", icon=":material/arrow_back:", key=f"{key}_back", on_click=move, args=(-1,),
+                disabled=st.session_state[key] == 0, width="stretch")
+    forward.button("Siguiente", icon=":material/arrow_forward:", key=f"{key}_forward", on_click=move, args=(1,),
+                   disabled=st.session_state[key] == last, width="stretch")
+    st.selectbox("Sección", range(len(sections)), format_func=lambda i: f"{i + 1}. {sections[i][1]}", key=key)
+    st.caption(f"Sección {st.session_state[key] + 1} de {len(sections)}")
+    return st.session_state[key]
+
+
+def presentation_styles(sections, index):
+    """Muestra solo la sección activa del reporte, como un carrusel.
+
+    Los encabezados (h2.nb-h2 con el ancla como id) son hermanos del contenido que los sigue, así que basta ocultar
+    lo que está antes del encabezado activo y desde el encabezado siguiente en adelante. La primera sección conserva
+    la portada del reporte.
+    """
+    block = REPORT_BLOCK
+    rules = []
+    if index > 0:
+        rules.append(f'{block} > *:has(~ * h2#{sections[index][0]})')
+    if index < len(sections) - 1:
+        following = sections[index + 1][0]
+        rules += [f'{block} > *:has(h2#{following})', f'{block} > *:has(h2#{following}) ~ *']
+    if rules:
+        # Solo en pantalla: al imprimir o guardar como PDF se incluyen todas las secciones
+        st.html(f"<style>@media screen {{ {', '.join(rules)} {{ display: none !important; }} }}</style>")
 
 
 def callout(kind, label, text):
